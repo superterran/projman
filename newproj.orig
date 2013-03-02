@@ -1,0 +1,175 @@
+#!/usr/bin/sudo python
+# By Anthony Cargile http://anthonycargile.com/
+
+
+"""
+Adds a new dev site.
+
+USAGE: newpro.py --site chesapeak --git cffg
+(replace chesapeak with site name (minus the .dev)
+and cffg with the git abbreviation (minus the -git)
+IF it is different, else it mirrors the site name)
+
+PREREQUISITES:
+This unedited script assumes:
+* LAMP is installed and ready for vhosts, etc.
+* You can (and do) run this as root
+* git is installed and in the path
+* Apache2 is your webserver, reloadable by `service apache2 restart`
+
+If the above is not true, simply read on and tweak the options.
+
+Edit the following strings for more advanced, system-specific config options:
+"""
+
+# web server site virtual host config (currently apache):
+virtual_host_config = "\
+<VirtualHost HOSTNAME.dev:80>\n \
+        DocumentRoot HOSTPATH\n \
+        ServerAlias HOSTNAME.dev\n \
+	ServerName HOSTNAME.dev\n \
+	SECURE\n \
+<Directory HOSTPATH>\n \
+Options Indexes FollowSymLinks MultiViews\n \
+AllowOverride All\n \
+Order allow,deny\n \
+allow from all\n \
+</Directory>\n \
+</VirtualHost>\n \
+\n"
+
+# configuration section pertaining to SSL
+ssl_config = "\
+	<IfModule mod_ssl.c>\n \
+	SSLEngine on\n \
+	SSLCertificateFile /etc/apache2/certs/HOSTNAME.crt\n \
+	BrowserMatch \"MSIE [2-6]\" \\\n \
+                nokeepalive ssl-unclean-shutdown \\\n \
+                downgrade-1.0 force-response-1.0\n \
+        BrowserMatch \"MSIE [17-9]\" ssl-unclean-shutdown\n \
+	<FilesMatch \"\\.(cgi|shtml|phtml|php)$\">\n \
+                SSLOptions +StdEnvVars\n \
+        </FilesMatch>\n \
+	</IfModule>\n \
+"
+
+# command to restart apache/local webserver:
+cmd_restart_webserver = "killall httpd && httpd"
+
+# config file parent:
+config_file = "/etc/httpd/conf.d"
+
+# site root:
+site_root = "/var/www"
+
+# Git repo path on remote server (ssh://origin:<remote_repo_path>/site-dev)
+# this notably needs the leading and trailing slashes:
+remote_repo_path = "/"
+
+# Git repo suffix (<repo name><git_suffix>)
+# leave blank if no org naming convention used
+git_suffix = ".git"
+
+# Git server to plug into: (git clone <origin>:/remote_repo_path/site-dev)
+origin = "git@blueacorn.beanstalkapp.com"
+
+# configure the string that goes in the hosts file:
+hosts_string = "127.0.0.1 SITE.dev"
+
+# where's the hosts file?
+hosts_file = "/etc/hosts"
+
+#################################
+###### END CONFIG OPTIONS #######
+#################################
+
+import subprocess
+import os
+import argparse
+import sys
+import traceback
+
+# check if root:
+if not os.getuid() == 0:
+    print "sorry, you need to run this as root"
+    sys.exit(1)
+
+# parse args:
+parser = argparse.ArgumentParser(description="Add new dev site.", prog="newpro.py", epilog="Read head of file for more info.")
+parser.add_argument("--git_suffix", help="Git repo suffix", default=git_suffix)
+parser.add_argument("--git", help="Name git *-dev abbreviation, if different.", default=git_suffix)
+parser.add_argument("site", help="Name of the new dev site", default="test")
+parser.add_argument("--origin", help="Git Server", default=origin)
+parser.add_argument("--path", help="Remote repository path", default=remote_repo_path)
+parser.add_argument("-s", help="Set up SSL", default=False, action='store_true')
+
+# parse args and store filtered values:
+args = parser.parse_args()
+git_suffix = args.git_suffix
+if args.git == git_suffix:
+	git = args.site + git_suffix
+else:
+	git = args.git + git_suffix
+site = args.site.replace(".dev","") # idiot-proof
+origin = args.origin
+remote_repo_path = args.path
+
+
+# init git repo:
+try:
+	os.mkdir(os.path.join(site_root,site + ".dev"))
+	os.system("chmod 777 " + os.path.join(site_root, site + ".dev"))
+except OSError: # directory exists already, not an issue
+	pass
+try:
+	os.chdir(os.path.join(site_root, site + ".dev"))
+	if args.git.lower() != "none":
+		os.system("git clone "+origin+":" + remote_repo_path + git + " .")
+	#os.system("chmod -R 777 .") # fucks up the git status readout
+except:
+	print "Error during Git use:"
+	print "Error: " + str(sys.exc_info()[0]) + str(sys.exc_info()[1])
+	traceback.print_tb(sys.exc_info()[2])
+	sys.exit(1)
+
+# git repo is in the site root, virtual host is set, everything's good.
+
+# add virtual host:
+config_handle = open(os.path.join(config_file,site + ".dev.conf"),"w")
+if args.s:
+	virtual_host_config = virtual_host_config.replace("SECURE", ssl_config)
+else:
+	virtual_host_config = virtual_host_config.replace("SECURE", "")
+config = virtual_host_config.replace("HOSTNAME", site)
+config = config.replace("HOSTPATH",os.path.join(site_root, site + ".dev"))
+config_handle.write(config)
+config_handle.close()
+
+# write out hosts file:
+hosts_handle = open(hosts_file, "r")
+hosts_data = hosts_handle.read()
+hosts_string = hosts_string.replace("SITE",site)
+if not hosts_string in hosts_data:
+	hosts_handle.close()
+	hosts_handle = open(hosts_file, "w")
+	hosts_data += "\n" + hosts_string + "\n"
+	hosts_handle.write(hosts_data)
+hosts_handle.close()
+
+# SSL Cert config:
+if args.s:
+	if not os.path.exists("/etc/apache2/certs"):
+		os.mkdir("/etc/apache2/certs")
+	os.system("make-ssl-cert /usr/share/ssl-cert/ssleay.cnf /etc/apache2/certs/"+site+".crt")
+
+# restart the web server to honor the config:
+retval = os.system(cmd_restart_webserver) # hence "root"
+if retval != 0:
+        print "ERROR: Web server misconfigured."
+        sys.exit(1)
+
+# umask to 0, for file writability (GIT!)
+os.umask(0)
+
+print "Site initiated, code away."
+sys.exit(0) # we're done.
