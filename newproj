@@ -1,0 +1,15 @@
+#!/usr/bin/sudo python
+
+# usage: newproj <branchname>
+
+execfile('projman.py')
+
+#load the application
+app = projman()
+
+app.vhost_create(sys.argv[1])
+app.hostfile_add(sys.argv[1])
+app.git_clone(sys.argv[1])
+
+print "\n\n------------------------------------"
+
